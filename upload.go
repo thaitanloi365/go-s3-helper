@@ -129,6 +129,60 @@ func (wrapper *Wrapper) UploadFiles(params UploadFilesParams) []string {
 	return uploadedFiles
 }
 
+// UploadFiles upload
+func (wrapper *Wrapper) UploadFile(file *os.File, folder string) (string, error) {
+	originFile, err := os.Open(file)
+	if err != nil {
+		fmt.Printf("failed to open file %q, %v", file, err)
+		return "", err
+	}
+
+	var cfg = wrapper.Config
+
+	fmt.Println("files to update", files)
+	if err == nil {
+		for _, file := range files {
+			fmt.Printf("uploading file: %s\n", file)
+
+			reader, writer := io.Pipe()
+			go func() {
+				gw := gzip.NewWriter(writer)
+				io.Copy(gw, originFile)
+				originFile.Close()
+				gw.Close()
+				writer.Close()
+			}()
+			var ext = path.Ext(file)
+			var fileName = file[0 : len(file)-len(ext)]
+			var gzipFileName = fmt.Sprintf("%s.gz", fileName)
+
+			if err != nil {
+				fmt.Printf("create s3 session error: %v\n", err)
+				break
+			}
+
+			var fileKey = filepath.Base(gzipFileName)
+			uploader := s3manager.NewUploader(wrapper.session)
+			result, err := uploader.Upload(&s3manager.UploadInput{
+				Body:   reader,
+				Bucket: aws.String(params.Bucket),
+				Key:    aws.String(fmt.Sprintf("%s/%s", params.Folder, fileKey)),
+				ACL:    aws.String(cfg.Credentials.ACL),
+			})
+
+			if err == nil {
+				fmt.Printf("%s is uploaded to s3 at %s\n", fileKey, result.Location)
+				uploadedFiles = append(uploadedFiles, gzipFileName)
+				uploadedFiles = append(uploadedFiles, file)
+			} else {
+				fmt.Printf("update s3 error: %v\n", err)
+			}
+
+		}
+	}
+	return uploadedFiles
+}
+
 // UploadImageBase64 base64
 func (wrapper *Wrapper) UploadImageBase64(params UploadImage64Params) (*UploadImage64Result, error) {
 	var imgBase64 = ImageBase64(params.ImageBase64)
