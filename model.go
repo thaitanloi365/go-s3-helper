@@ -1,7 +1,6 @@
 package s3
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -149,7 +148,6 @@ func New(config *Config) *Wrapper {
 
 	if err != nil {
 		panic("Create aws session error")
-		fmt.Println("err", err)
 	}
 	return &Wrapper{
 		Config:  config,
