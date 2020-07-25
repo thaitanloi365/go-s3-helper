@@ -80,8 +80,7 @@ func (wrapper *Wrapper) UploadAndCompressGzipFiles(params UploadFilesParams) []s
 }
 
 // UploadFiles upload files
-func (wrapper *Wrapper) UploadFiles(params UploadFilesParams) []string {
-	var uploadedFiles []string
+func (wrapper *Wrapper) UploadFiles(params UploadFilesParams) (uploadedFiles []string, errs []error) {
 
 	if params.Bucket == "" {
 		panic("Log bucket is invalid")
@@ -91,11 +90,13 @@ func (wrapper *Wrapper) UploadFiles(params UploadFilesParams) []string {
 	for _, f := range params.UploadFiles {
 		go func(file *multipart.FileHeader) {
 			wg.Add(1)
-			wrapper.UploadFile(file.Filename, params.Folder, "")
+			uploadedFile, err := wrapper.UploadFile(file.Filename, params.Folder, "")
+			uploadedFiles = append(uploadedFiles, uploadedFile)
+			errs = append(errs, err)
 		}(f)
 	}
 	wg.Wait()
-	return uploadedFiles
+	return
 }
 
 // UploadFile upload file
