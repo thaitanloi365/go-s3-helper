@@ -1,11 +1,11 @@
 package s3
 
 import (
+	"io"
 	"net/http"
-	"os"
 )
 
-func getFileContentType(out *os.File) (string, error) {
+func getFileContentType(out io.Reader) (string, error) {
 
 	// Only the first 512 bytes are used to sniff the content type.
 	buffer := make([]byte, 512)

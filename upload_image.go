@@ -2,18 +2,15 @@ package s3
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/base64"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
-	"io"
 	"io/ioutil"
 	"mime/multipart"
-	"os"
 	"path"
-	"path/filepath"
+	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
@@ -30,15 +27,9 @@ type ResizeImageParams struct {
 	Folder           string
 }
 
-// UploadFilesParams params
-type UploadFilesParams struct {
-	Bucket      string
-	Folder      string
-	UploadFiles []*multipart.FileHeader
-}
-
 // UploadImage64Params params
 type UploadImage64Params struct {
+	Key               string
 	ImageBase64       string
 	Bucket            string
 	Folder            string
@@ -47,7 +38,8 @@ type UploadImage64Params struct {
 
 // UploadImageFileParams params
 type UploadImageFileParams struct {
-	ImageFile         *os.File
+	Key               string
+	ImageFile         *multipart.FileHeader
 	Bucket            string
 	Folder            string
 	ResizeImageParams *ResizeImageParams
@@ -66,116 +58,16 @@ type UploadImageResult struct {
 	ResizeImage *uploadImageResult
 }
 
-// UploadAndCompressGzipFiles upload
-func (wrapper *Wrapper) UploadAndCompressGzipFiles(params UploadFilesParams) []string {
-	var uploadedFiles []string
-
-	var cfg = wrapper.Config
-
-	if params.Bucket == "" {
-		panic("Log bucket is invalid")
-	}
-
-	for _, file := range params.UploadFiles {
-		fmt.Printf("uploading file: %s\n", file.Filename)
-
-		originFile, err := file.Open()
-		if err != nil {
-			fmt.Printf("failed to open file %q, %v", file, err)
-			break
-		}
-
-		reader, writer := io.Pipe()
-		go func() {
-			gw := gzip.NewWriter(writer)
-			io.Copy(gw, originFile)
-			originFile.Close()
-			gw.Close()
-			writer.Close()
-		}()
-		var ext = path.Ext(file.Filename)
-		var fileName = file.Filename[0 : len(file.Filename)-len(ext)]
-		var gzipFileName = fmt.Sprintf("%s.gz", fileName)
-
-		if err != nil {
-			fmt.Printf("create s3 session error: %v\n", err)
-			break
-		}
-
-		var fileKey = filepath.Base(gzipFileName)
-		uploader := s3manager.NewUploader(wrapper.session)
-		result, err := uploader.Upload(&s3manager.UploadInput{
-			Body:   reader,
-			Bucket: aws.String(params.Bucket),
-			Key:    aws.String(fmt.Sprintf("%s/%s", params.Folder, fileKey)),
-			ACL:    aws.String(cfg.Credentials.ACL),
-		})
-
-		if err == nil {
-			fmt.Printf("%s is uploaded to s3 at %s\n", fileKey, result.Location)
-			uploadedFiles = append(uploadedFiles, gzipFileName)
-			uploadedFiles = append(uploadedFiles, file.Filename)
-		} else {
-			fmt.Printf("update s3 error: %v\n", err)
-		}
-
-	}
-	return uploadedFiles
-}
-
-// UploadFiles upload files
-func (wrapper *Wrapper) UploadFiles(params UploadFilesParams) []string {
-	var uploadedFiles []string
-
-	var cfg = wrapper.Config
-
-	if params.Bucket == "" {
-		panic("Log bucket is invalid")
-	}
-
-	for _, file := range params.UploadFiles {
-		fmt.Printf("uploading file: %s\n", file.Filename)
-
-		originFile, err := file.Open()
-		if err != nil {
-			fmt.Printf("failed to open file %q, %v", file, err)
-			break
-		}
-
-		data, err := ioutil.ReadAll(originFile)
-		if err != nil {
-			fmt.Printf("failed to read file %q, %v", file, err)
-			break
-		}
-
-		if err != nil {
-			fmt.Printf("create s3 session error: %v\n", err)
-			break
-		}
-
-		var fileKey = filepath.Base(file.Filename)
-		uploader := s3manager.NewUploader(wrapper.session)
-		result, err := uploader.Upload(&s3manager.UploadInput{
-			Body:   bytes.NewBuffer(data),
-			Bucket: aws.String(params.Bucket),
-			Key:    aws.String(fmt.Sprintf("%s/%s", params.Folder, fileKey)),
-			ACL:    aws.String(cfg.Credentials.ACL),
-		})
-
-		if err == nil {
-			fmt.Printf("%s is uploaded to s3 at %s\n", fileKey, result.Location)
-			uploadedFiles = append(uploadedFiles, file.Filename)
-		} else {
-			fmt.Printf("update s3 error: %v\n", err)
-		}
-
-	}
-	return uploadedFiles
-}
-
 // UploadImageFile FILE
 func (wrapper *Wrapper) UploadImageFile(params UploadImageFileParams) (*UploadImageResult, error) {
-	ct, err := getFileContentType(params.ImageFile)
+	f, err := params.ImageFile.Open()
+	if err != nil {
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	ct, err := getFileContentType(f)
 	if err != nil {
 		return nil, err
 	}
@@ -184,8 +76,12 @@ func (wrapper *Wrapper) UploadImageFile(params UploadImageFileParams) (*UploadIm
 		return nil, fmt.Errorf("Bucket is invalid")
 	}
 
-	var ext = path.Ext(params.ImageFile.Name())
-	var id = xid.New().String()
+	var ext = path.Ext(params.ImageFile.Filename)
+	var id = params.Key
+	if id == "" {
+		id = xid.New().String()
+	}
+
 	var key = fmt.Sprintf("%s/%s%s", params.Folder, id, ext)
 
 	var uploader = s3manager.NewUploader(wrapper.session)
@@ -193,18 +89,18 @@ func (wrapper *Wrapper) UploadImageFile(params UploadImageFileParams) (*UploadIm
 	var contentType = ImageContentType(ct)
 	switch contentType {
 	case PNGImageContentType:
-		imageOrigin, err = png.Decode(params.ImageFile)
+		imageOrigin, err = png.Decode(f)
 		if err != nil {
 			return nil, err
 		}
 	case JPGImageContentType, JPEGImageContentType:
-		imageOrigin, err = jpeg.Decode(params.ImageFile)
+		imageOrigin, err = jpeg.Decode(f)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	buffer, err := ioutil.ReadAll(params.ImageFile)
+	buffer, err := ioutil.ReadAll(f)
 	if err != nil {
 		return nil, err
 	}
@@ -281,26 +177,19 @@ func (wrapper *Wrapper) UploadImageFile(params UploadImageFileParams) (*UploadIm
 	return res, nil
 }
 
-// UploadFile upload file
-func (wrapper *Wrapper) UploadFile(fileName, folder string) (string, error) {
-
-	file, err := os.Open(fileName)
-	if err != nil {
-		return "", err
+// UploadImageFiles upload multi files
+func (wrapper *Wrapper) UploadImageFiles(params []UploadImageFileParams) (results []*UploadImageResult, errs []error) {
+	var wg sync.WaitGroup
+	for _, p := range params {
+		wg.Add(1)
+		go func(p UploadImageFileParams) {
+			r, err := wrapper.UploadImageFile(p)
+			results = append(results, r)
+			errs = append(errs, err)
+		}(p)
 	}
 
-	uploader := s3manager.NewUploader(wrapper.session)
-	result, err := uploader.Upload(&s3manager.UploadInput{
-		Body:   file,
-		Bucket: aws.String(wrapper.Config.Credentials.Bucket),
-		Key:    aws.String(fmt.Sprintf("%s/%s", folder, xid.New().String())),
-		ACL:    aws.String(wrapper.Config.Credentials.ACL),
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return result.Location, nil
+	return
 
 }
 
