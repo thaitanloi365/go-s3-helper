@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/gabriel-vasile/mimetype"
 	"github.com/rs/xid"
 )
 
@@ -114,13 +115,20 @@ func (wrapper *Wrapper) UploadFile(file *multipart.FileHeader, folder, key strin
 		k = xid.New().String()
 	}
 
-	uploader := s3manager.NewUploader(wrapper.session)
-	result, err := uploader.Upload(&s3manager.UploadInput{
+	var uploadParam = &s3manager.UploadInput{
 		Body:   src,
 		Bucket: aws.String(wrapper.Config.Credentials.Bucket),
-		Key:    aws.String(fmt.Sprintf("%s/%s", folder, k)),
+		Key:    aws.String(fmt.Sprintf("%s/%s%s", folder, k, path.Ext(file.Filename))),
 		ACL:    aws.String(wrapper.Config.Credentials.ACL),
-	})
+	}
+
+	mine, err := mimetype.DetectReader(src)
+	if err == nil {
+		uploadParam.ContentType = aws.String(mine.String())
+	}
+
+	uploader := s3manager.NewUploader(wrapper.session)
+	result, err := uploader.Upload(uploadParam)
 	if err != nil {
 		return "", err
 	}
