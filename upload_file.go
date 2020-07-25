@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"os"
 	"path"
 	"path/filepath"
 	"sync"
@@ -88,24 +87,28 @@ func (wrapper *Wrapper) UploadFiles(params UploadFilesParams) (uploadedFiles []s
 
 	var wg sync.WaitGroup
 	for _, f := range params.UploadFiles {
-		go func(file *multipart.FileHeader) {
-			wg.Add(1)
-			uploadedFile, err := wrapper.UploadFile(file.Filename, params.Folder, "")
+		wg.Add(1)
+		go func(file *multipart.FileHeader, wg *sync.WaitGroup) {
+			defer wg.Done()
+
+			uploadedFile, err := wrapper.UploadFile(file, params.Folder, "")
 			uploadedFiles = append(uploadedFiles, uploadedFile)
 			errs = append(errs, err)
-		}(f)
+		}(f, &wg)
 	}
 	wg.Wait()
 	return
 }
 
 // UploadFile upload file
-func (wrapper *Wrapper) UploadFile(fileName, folder, key string) (string, error) {
-	fmt.Printf("uploading file: %s\n", fileName)
-	file, err := os.Open(fileName)
+func (wrapper *Wrapper) UploadFile(file *multipart.FileHeader, folder, key string) (string, error) {
+	src, err := file.Open()
 	if err != nil {
 		return "", err
 	}
+	defer src.Close()
+
+	fmt.Printf("uploading file: %s\n", file.Filename)
 	var k = key
 	if k == "" {
 		k = xid.New().String()
@@ -113,7 +116,7 @@ func (wrapper *Wrapper) UploadFile(fileName, folder, key string) (string, error)
 
 	uploader := s3manager.NewUploader(wrapper.session)
 	result, err := uploader.Upload(&s3manager.UploadInput{
-		Body:   file,
+		Body:   src,
 		Bucket: aws.String(wrapper.Config.Credentials.Bucket),
 		Key:    aws.String(fmt.Sprintf("%s/%s", folder, k)),
 		ACL:    aws.String(wrapper.Config.Credentials.ACL),
